@@ -28,6 +28,11 @@ export interface FaceMatchResult {
   } | null;
 }
 
+export interface ReferenceLoadStatus {
+  loaded: number;
+  total: number;
+}
+
 interface UseFaceRecognitionOptions {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -38,12 +43,14 @@ interface UseFaceRecognitionOptions {
 
 // Minimum confidence (%) required before emitting an identity event.
 const IDENTIFY_MIN_CONFIDENCE = 50;
+
 // Consecutive frames a new identity must persist before emitting (debounce).
 const IDENTIFY_STABLE_FRAMES = 3;
 
 interface LoadReferenceResult {
   descriptors: faceapi.LabeledFaceDescriptors[];
   pendingProfiles: FaceProfile[];
+  loadStatus: Record<string, ReferenceLoadStatus>;
 }
 
 async function loadReferenceDescriptors(
@@ -51,33 +58,53 @@ async function loadReferenceDescriptors(
 ): Promise<LoadReferenceResult> {
   const descriptors: faceapi.LabeledFaceDescriptors[] = [];
   const pendingProfiles: FaceProfile[] = [];
+  const loadStatus: Record<string, ReferenceLoadStatus> = {};
 
   for (const profile of FACE_PROFILES) {
-    let image: HTMLImageElement;
+    const personDescriptors: Float32Array[] = [];
+    const totalImages = profile.imagePaths.length;
 
-    try {
-      image = await faceapi.fetchImage(profile.imagePath);
-    } catch {
-      pendingProfiles.push(profile);
-      continue;
+    for (const imagePath of profile.imagePaths) {
+      let image: HTMLImageElement;
+
+      try {
+        image = await faceapi.fetchImage(imagePath);
+      } catch {
+        console.warn(`Could not load image for ${profile.name}: ${imagePath}`);
+        continue;
+      }
+
+      const detection = await faceapi
+        .detectSingleFace(image, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (!detection) {
+        console.warn(`No face detected for ${profile.name}: ${imagePath}`);
+        continue;
+      }
+
+      personDescriptors.push(detection.descriptor);
     }
 
-    const detection = await faceapi
-      .detectSingleFace(image, detectorOptions)
-      .withFaceLandmarks()
-      .withFaceDescriptor();
+    loadStatus[profile.id] = {
+      loaded: personDescriptors.length,
+      total: totalImages,
+    };
 
-    if (!detection) {
-      pendingProfiles.push(profile);
-      continue;
+    if (personDescriptors.length > 0) {
+      descriptors.push(
+        new faceapi.LabeledFaceDescriptors(profile.name, personDescriptors),
+      );
     }
 
-    descriptors.push(
-      new faceapi.LabeledFaceDescriptors(profile.name, [detection.descriptor]),
-    );
+    // A profile is pending if not all expected reference images loaded successfully.
+    if (personDescriptors.length < totalImages) {
+      pendingProfiles.push(profile);
+    }
   }
 
-  return { descriptors, pendingProfiles };
+  return { descriptors, pendingProfiles, loadStatus };
 }
 
 function toMatchResult(
@@ -144,8 +171,10 @@ function getErrorMessage(err: unknown): string {
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
       return 'Camera permission denied. Allow camera access and reload.';
     }
+
     return err.message;
   }
+
   return 'Face recognition failed to start.';
 }
 
@@ -159,6 +188,9 @@ export function useFaceRecognition({
   const [match, setMatch] = useState<FaceMatchResult | null>(null);
   const [registeredNames, setRegisteredNames] = useState<string[]>([]);
   const [pendingProfiles, setPendingProfiles] = useState<FaceProfile[]>([]);
+  const [referenceLoadStatus, setReferenceLoadStatus] = useState<
+    Record<string, ReferenceLoadStatus>
+  >({});
   const [error, setError] = useState<string | null>(null);
   const [enrollmentMessage, setEnrollmentMessage] = useState<string | null>(
     null,
@@ -278,6 +310,13 @@ export function useFaceRecognition({
 
   const activateMatcher = useCallback(
     (descriptors: faceapi.LabeledFaceDescriptors[]) => {
+      if (descriptors.length === 0) {
+        faceMatcherRef.current = null;
+        labeledDescriptorsRef.current = [];
+        setRegisteredNames([]);
+        return;
+      }
+
       labeledDescriptorsRef.current = descriptors;
       faceMatcherRef.current = new faceapi.FaceMatcher(
         descriptors,
@@ -325,20 +364,50 @@ export function useFaceRecognition({
         return false;
       }
 
+      const existingEntry = labeledDescriptorsRef.current.find(
+        (entry) => entry.label === profile.name,
+      );
+
+      const existingDescriptors = existingEntry
+        ? Array.from(existingEntry.descriptors)
+        : [];
+
+      const updatedPersonDescriptors = [
+        ...existingDescriptors,
+        detection.descriptor,
+      ];
+
       const updatedDescriptors = [
         ...labeledDescriptorsRef.current.filter(
           (entry) => entry.label !== profile.name,
         ),
-        new faceapi.LabeledFaceDescriptors(profile.name, [
-          detection.descriptor,
-        ]),
+        new faceapi.LabeledFaceDescriptors(
+          profile.name,
+          updatedPersonDescriptors,
+        ),
       ];
 
       activateMatcher(updatedDescriptors);
 
-      const remaining = pendingProfiles.filter(
-        (pending) => pending.id !== profile.id,
+      const expectedTotal = profile.imagePaths.length;
+      const cappedLoaded = Math.min(
+        updatedPersonDescriptors.length,
+        expectedTotal,
       );
+
+      setReferenceLoadStatus((previous) => ({
+        ...previous,
+        [profile.id]: {
+          loaded: cappedLoaded,
+          total: expectedTotal,
+        },
+      }));
+
+      const remaining = pendingProfiles.filter((pending) => {
+        if (pending.id !== profile.id) return true;
+        return cappedLoaded < expectedTotal;
+      });
+
       setPendingProfiles(remaining);
 
       if (canvas) {
@@ -400,6 +469,7 @@ export function useFaceRecognition({
 
       streamRef.current = stream;
       const video = videoRef.current;
+
       if (!video) {
         throw new Error('Video element is not available.');
       }
@@ -438,25 +508,38 @@ export function useFaceRecognition({
         setStatus('loading-faces');
         setStatusMessage('Loading reference faces…');
 
-        const { descriptors, pendingProfiles: pending } =
-          await loadReferenceDescriptors(detectorOptionsRef.current);
+        const {
+          descriptors,
+          pendingProfiles: pending,
+          loadStatus,
+        } = await loadReferenceDescriptors(detectorOptionsRef.current);
 
         if (cancelled) return;
 
         activateMatcher(descriptors);
         setPendingProfiles(pending);
+        setReferenceLoadStatus(loadStatus);
 
         await startCamera();
+
         if (cancelled) return;
 
         if (pending.length > 0) {
           setStatus('enrollment');
-          setStatusMessage('Register faces from webcam');
+          setStatusMessage('Register missing reference faces from webcam');
+
+          const firstPending = pending[0];
+          const firstPendingStatus = loadStatus[firstPending.id];
+          const loaded = firstPendingStatus?.loaded ?? 0;
+          const total =
+            firstPendingStatus?.total ?? firstPending.imagePaths.length;
+
           setEnrollmentMessage(
             descriptors.length > 0
-              ? `Some reference photos were missing. Capture ${pending[0].name} from the webcam.`
-              : `Reference photos not found. Capture ${pending[0].name} from the webcam.`,
+              ? `${firstPending.name} has ${loaded} / ${total} reference images loaded. Capture the missing reference image from the webcam.`
+              : `Reference photos not found. Capture ${firstPending.name} from the webcam.`,
           );
+
           return;
         }
 
@@ -486,12 +569,7 @@ export function useFaceRecognition({
       streamRef.current = null;
       faceMatcherRef.current = null;
     };
-  }, [
-    activateMatcher,
-    startRecognition,
-    stopDetectionLoop,
-    videoRef,
-  ]);
+  }, [activateMatcher, startRecognition, stopDetectionLoop, videoRef]);
 
   return {
     status,
@@ -499,6 +577,7 @@ export function useFaceRecognition({
     match,
     registeredNames,
     pendingProfiles,
+    referenceLoadStatus,
     enrollmentMessage,
     error,
     enrollProfile,

@@ -41,15 +41,11 @@ export async function fetchStatus(): Promise<PicoStatus> {
     STATUS_TIMEOUT_MS,
   );
 
-  console.log("Pico response status:", response.status);
-
   if (!response.ok) {
     throw new Error(`Pico /status returned ${response.status}`);
   }
 
   const data = await response.json();
-
-  console.log("Raw Pico status received:", data);
 
   return data as PicoStatus;
 }
