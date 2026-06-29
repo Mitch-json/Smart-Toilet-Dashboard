@@ -222,31 +222,43 @@ export function App() {
           details
         });
       };
-      if (status.motionDetected && !prevData.motionDetected) {
-        addLog('Motion Detected', 'PIR sensor activated');
+      const mappedStatus = {
+        liquidLevel: status.urineTankLevel,
+        solidLevel: status.poopTankLevel,
+        motionDetected: status.bulbRelay,
+        relayStatus: status.solenoidValve,
+        batteryLevel: status.batteryLevel,
+        totalUsageCount: status.userCount
+      };
+
+      if (mappedStatus.motionDetected && !prevData.motionDetected) {
+        addLog('Bulb Relay ON', 'Reported by Pico');
       }
-      if (status.relayStatus !== prevData.relayStatus) {
+
+      if (mappedStatus.relayStatus !== prevData.relayStatus) {
         addLog(
-          status.relayStatus ? 'Waste Gate Opened' : 'Waste Gate Closed',
+          mappedStatus.relayStatus ? 'Solenoid Valve ON' : 'Solenoid Valve OFF',
           'Reported by Pico'
         );
       }
-      if (status.liquidLevel > 90 && prevData.liquidLevel <= 90) {
+
+      if (mappedStatus.liquidLevel > 90 && prevData.liquidLevel <= 90) {
         setToastNotification({
           type: 'warning',
-          message: 'Warning: Liquid tank is nearly full (>90%)',
+          message: 'Warning: Urine tank is nearly full (>90%)',
           id: Date.now()
         });
         setTimeout(() => setToastNotification(null), 3000);
       }
+
       return {
         ...prevData,
-        liquidLevel: status.liquidLevel,
-        solidLevel: status.solidLevel,
-        motionDetected: status.motionDetected,
-        relayStatus: status.relayStatus,
-        batteryLevel: status.batteryLevel,
-        totalUsageCount: status.totalUsageCount,
+        liquidLevel: mappedStatus.liquidLevel,
+        solidLevel: mappedStatus.solidLevel,
+        motionDetected: mappedStatus.motionDetected,
+        relayStatus: mappedStatus.relayStatus,
+        batteryLevel: mappedStatus.batteryLevel,
+        totalUsageCount: mappedStatus.totalUsageCount,
         systemLogs: logs.slice(0, 20)
       };
     });

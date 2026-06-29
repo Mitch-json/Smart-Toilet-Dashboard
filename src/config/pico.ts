@@ -1,15 +1,15 @@
 // Base URL of the Pico W HTTP server. Override via .env -> VITE_PICO_URL.
 export const PICO_BASE_URL: string =
-  import.meta.env.VITE_PICO_URL ?? 'http://192.168.1.50';
+  import.meta.env.VITE_PICO_URL ?? 'http://10.195.125.244';
 
 // Core live fields the Pico reports from its sensors.
 export interface PicoStatus {
-  liquidLevel: number;
-  solidLevel: number;
-  motionDetected: boolean;
-  relayStatus: boolean;
+  poopTankLevel: number;
+  urineTankLevel: number;
+  userCount: number;
+  solenoidValve: boolean;
+  bulbRelay: boolean;
   batteryLevel: number;
-  totalUsageCount: number;
 }
 
 const STATUS_TIMEOUT_MS = 1500;
@@ -22,6 +22,7 @@ async function fetchWithTimeout(
 ): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } finally {
@@ -29,24 +30,32 @@ async function fetchWithTimeout(
   }
 }
 
-// Poll the Pico for the latest sensor snapshot. Throws on network error,
-// timeout, or non-2xx so callers can fall back to mock data.
+// Poll the Pico for the latest sensor snapshot.
+// Throws on network error, timeout, or non-2xx so callers can fall back to mock data.
 export async function fetchStatus(): Promise<PicoStatus> {
+  console.log("Fetching Pico status from:", `${PICO_BASE_URL}/status`);
+
   const response = await fetchWithTimeout(
     `${PICO_BASE_URL}/status`,
     { headers: { Accept: 'application/json' } },
     STATUS_TIMEOUT_MS,
   );
 
+  console.log("Pico response status:", response.status);
+
   if (!response.ok) {
     throw new Error(`Pico /status returned ${response.status}`);
   }
 
-  return (await response.json()) as PicoStatus;
+  const data = await response.json();
+
+  console.log("Raw Pico status received:", data);
+
+  return data as PicoStatus;
 }
 
-// Notify the Pico that a face was recognized. Fire-and-forget: errors are
-// swallowed so a missing Pico never disrupts the recognition UI.
+// Optional: notify the Pico that a face was recognized.
+// Keep this only if you still plan to use facial recognition later.
 export async function sendRecognition(
   name: string,
   confidence: number,
@@ -66,7 +75,9 @@ export async function sendRecognition(
   }
 }
 
-// Optional: tell the Pico about a manual relay/gate toggle.
+// Optional: send commands to the Pico.
+// For now your Pico status-only code does not handle /command,
+// so this can remain unused.
 export async function sendCommand(
   command: string,
   value?: unknown,
