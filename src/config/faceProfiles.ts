@@ -8,7 +8,7 @@ export interface FaceProfile {
 // ("Welcome <name>!") and shown on the dashboard.
 export const FACE_PROFILES: FaceProfile[] = [
   { id: 'person1', name: 'Mitch Macharia', imagePath: '/faces/person6-1.jpg' },
-  { id: 'person2', name: 'Dr Nancy Matheri', imagePath: '/faces/person7.jpg' },
+  { id: 'person2', name: 'Dr Nancy Matheri', imagePath: '/faces/person7.jpeg' },
 
 ];
 
