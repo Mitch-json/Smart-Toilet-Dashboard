@@ -1,6 +1,6 @@
 // Base URL of the Pico W HTTP server. Override via .env -> VITE_PICO_URL.
 export const PICO_BASE_URL: string =
-  import.meta.env.VITE_PICO_URL ?? 'http://10.195.125.244';
+  import.meta.env.VITE_PICO_URL ?? 'http://10.87.131.101';
 
 // Core live fields the Pico reports from its sensors.
 export interface PicoStatus {
